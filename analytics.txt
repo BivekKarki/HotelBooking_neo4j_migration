@@ -4,13 +4,12 @@
 // =============================================================================
 // Requires the Graph Data Science plugin (Neo4j Desktop > Plugins > Graph Data
 // Science Library > Install). Run import.txt first.
-// Check the version with:  RETURN gds.version();
-// =============================================================================
 
 
-// #############################################################################
+
+
 // TASK 4 - CENTRALITY
-// #############################################################################
+
 //
 // BUSINESS SCENARIO
 //   The hotel is about to expand and wants to know where its service-delivery
