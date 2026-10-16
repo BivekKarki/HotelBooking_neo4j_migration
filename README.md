@@ -24,40 +24,16 @@ need APOC - we deliberately rewrote one of the queries so it would run on a
 plain install.
 
 1. Copy all 12 `.csv` files into the import folder of your database.
-   In Neo4j Desktop that's the `...` menu next to the database > Open folder
-   > Import. The files need to sit directly in that folder, not in a
-   subfolder inside it, otherwise `file:///` won't find them.
+   
 2. Run `import.txt` section by section from the top. Section 0 wipes the
    database first, so skip it if you don't want that.
 3. Section 6 at the end prints the counts. You should get **1,397 nodes and
    3,773 relationships**. If not, re-run whichever section is short.
 4. Then `queries.txt` for Task 3, and `analytics.txt` for Tasks 4 and 5.
 
-Before running `analytics.txt`, check GDS is actually there with
-`RETURN gds.version();`. The scripts use the `gds.graph.project` syntax.
-
-## Expected results
-
-The counts and query results we got are written into the comments in each
-file so they can be checked against what the scripts produce.
-
-| Check | What we got |
-|---|---|
-| Nodes / relationships | 1,397 / 3,773 |
-| `serviceDelivery` projection | 907 nodes, 4,912 relationships |
-| `guestServices` projection | 72 nodes, 307 relationships |
-| Use case 1 - available premium rooms | 7 rows |
-| Use case 2 - outstanding invoices | 80 invoices, $73,295.96 owing |
-| Use case 3 - staff scorecard | 13 of 15 staff |
-| Use case 4 - recommendations for guest 51 | Breakfast Buffet first, 14 peers |
-
-The `serviceDelivery` projection is UNDIRECTED, which is why the relationship
-count comes back as 4,912 rather than 2,456 - Neo4j stores each one in both
-directions.
-
 ## A note on the data
 
-The data is made up, not real client data. We generated it at a larger scale
+The data is sample data, not real client data. We generated it at a larger scale
 than we used in Assessment 2 (60 guests, 250 bookings, 540 service requests)
 because with the smaller dataset the centrality and similarity algorithms
 didn't produce results that told us anything useful - too many nodes scored
