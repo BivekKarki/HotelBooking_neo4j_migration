@@ -1,0 +1,205 @@
+// PRT563 Assessment 4 - Task 3: Graph database queries
+// Hotel Booking & Guest Services - Neo4j / Cypher
+// Sydney Group 12
+//
+// Four use cases, getting more complex as they go. Each one has the business
+// scenario, the query itself, and the result we got so it can be checked.
+// Run them one at a time.
+
+
+// ============ USE CASE 1 - simple ============
+//
+// Scenario:
+//   A guest at the front desk asks about upgrading. The receptionist needs a
+//   list of every room that's free right now in a premium room type (we took
+//   premium as a base rate of $300 or more), cheapest-looking first.
+//
+// Why it's the simple one:
+//   One pattern, a single hop from Room to RoomType, one filter and a sort.
+//   It's basically the same as the simple SQL query we wrote in Assessment 2.
+//   Uses the room_status and roomtype_rate indexes.
+
+MATCH (r:Room {status: 'Available'})-[:OF_TYPE]->(t:RoomType)
+WHERE t.baseRate >= 300
+RETURN r.roomNumber   AS Room,
+       r.floor        AS Floor,
+       t.typeName     AS RoomType,
+       t.baseRate     AS NightlyRate,
+       t.maxCapacity  AS Sleeps
+ORDER BY t.baseRate DESC, r.roomNumber;
+
+// Result - 7 rows:
+//   201 | 2 | Penthouse | 620.0 | 6
+//   204 | 2 | Penthouse | 620.0 | 6
+//   101 | 1 | Suite     | 350.0 | 4
+//   202 | 2 | Suite     | 350.0 | 4
+//   403 | 4 | Suite     | 350.0 | 4
+//   404 | 4 | Suite     | 350.0 | 4
+//   506 | 5 | Suite     | 350.0 | 4
+
+
+// ============ USE CASE 2 - moderate ============
+//
+// Scenario:
+//   Accounts need to chase up money that hasn't come in. For every invoice
+//   that isn't fully paid they want the guest's contact details, which channel
+//   the booking came through, the invoice total, what's actually been paid and
+//   what's still owing.
+//
+// Why it's moderate:
+//   It walks back from Invoice to Booking to Guest, and also out to
+//   BookingChannel, so five labels are involved. The OPTIONAL MATCH is the
+//   important bit - it does the same job as the LEFT OUTER JOIN we used in
+//   Assessment 2. An invoice that's had no payment at all has no Payment node
+//   attached, and a normal MATCH would just drop those rows, which is exactly
+//   the invoices we're trying to find.
+
+MATCH (g:Guest)-[:MADE]->(b:Booking)-[:GENERATED]->(i:Invoice)
+MATCH (b)-[:VIA]->(c:BookingChannel)
+WHERE i.status IN ['Unpaid', 'PartiallyPaid']
+OPTIONAL MATCH (i)-[:SETTLED_BY]->(p:Payment)
+WITH g, c, i, coalesce(sum(p.amountPaid), 0) AS paid
+RETURN i.invoiceId                        AS Invoice,
+       g.firstName + ' ' + g.lastName     AS Guest,
+       g.email                            AS Email,
+       c.channelName                      AS BookedVia,
+       i.totalAmount                      AS Total,
+       round(paid, 2)                     AS Paid,
+       round(i.totalAmount - paid, 2)     AS Outstanding,
+       i.status                           AS Status
+ORDER BY Outstanding DESC
+LIMIT 20;
+
+// Result - there are 80 outstanding invoices altogether and this returns the
+// 20 biggest. Total owing across all 80 is $73,295.96.
+// First few rows:
+//   111 | Omar Martinez | Online Travel Agent | 4930.0  | 0.0  | 4930.0  | Unpaid
+//   79  | Oscar Silva   | Walk-in             | 3080.5  | 0.0  | 3080.5  | Unpaid
+//   175 | Tom Kim       | Phone               | 2636.5  | 0.0  | 2636.5  | Unpaid
+//   106 | Grace Ali     | Walk-in             | 4537.5  | ...  | ...     | PartiallyPaid
+// Take the LIMIT off to get all 80.
+
+
+// ============ USE CASE 3 - complex ============
+//
+// Scenario:
+//   The operations manager wants a scorecard for each staff member - how many
+//   service requests they handled, how many different guests they dealt with,
+//   how much revenue that came to, and the one service they delivered most
+//   often. They use this for rostering and commission.
+//
+// Why it's complex:
+//   It aggregates over the ServiceRequest node (the one that replaced the
+//   BookingService associative entity), then has to join back up through the
+//   Booking to get to the Guest. The two CALL subqueries are correlated, which
+//   lets us get the totals and the single most-delivered service for each
+//   staff member in one go. Doing the second half in SQL would need a window
+//   function or a correlated subquery.
+//
+//   One thing worth noting - this only uses built-in Cypher. Our first version
+//   needed the APOC plugin for the "most delivered service" part, which meant
+//   it wouldn't run on a plain Neo4j install, so we rewrote it this way.
+
+MATCH (s:Staff)
+CALL {
+    WITH s
+    MATCH (g:Guest)-[:MADE]->(:Booking)-[:REQUESTED]->(q:ServiceRequest)-[:FULFILLED_BY]->(s)
+    RETURN count(q)                   AS Requests,
+           count(DISTINCT g)          AS DistinctGuests,
+           round(sum(q.lineTotal), 2) AS Revenue
+}
+CALL {
+    WITH s
+    MATCH (q:ServiceRequest)-[:FULFILLED_BY]->(s)
+    MATCH (q)-[:OF_SERVICE]->(sv:Service)
+    WITH sv.serviceName AS service, count(q) AS delivered
+    ORDER BY delivered DESC, service
+    LIMIT 1
+    RETURN service AS MostDeliveredService, delivered AS TimesDelivered
+}
+RETURN s.name                AS Staff,
+       s.role                AS Role,
+       labels(s)             AS Labels,
+       Requests,
+       DistinctGuests,
+       Revenue,
+       MostDeliveredService,
+       TimesDelivered
+ORDER BY Revenue DESC;
+
+// Result - only 13 of the 15 staff come back.
+//   Staff           Role        Req  Guests   Revenue  Most delivered
+//   Sofia Smith     Valet        51      31   3912.20  Room Service (12)
+//   Chloe Dubois    Front Desk   48      27   3795.00  Breakfast Buffet (7)
+//   Isla Tanaka     Concierge    51      29   3786.70  Parking (per night) (11)
+//   Ava Brown       Front Desk   43      25   3599.20  Breakfast Buffet (8)
+//   Omar Silva      Concierge    48      32   3497.60  Laundry (7)
+//   Henry Dubois    Concierge    41      28   3227.90  Room Service (8)
+//   Aisha Nguyen    Front Desk   40      29   3099.90  Room Service (8)
+//   Liam Singh      Concierge    41      22   2686.90  Parking (per night) (8)
+//   Oscar Patel     Front Desk   37      24   2647.20  Breakfast Buffet (8)
+//   Mia Rossi       Front Desk   37      22   2560.40  Breakfast Buffet (6)
+//   Henry Williams  Front Desk   39      27   2536.20  Parking (per night) (10)
+//   Noah Chen       Valet        34      19   2501.70  Spa Treatment (5)
+//   Mateo Chen      Valet        30      21   2320.70  Spa Treatment (5)
+//
+// The two missing ones are the Duty Managers (Oscar Muller and Lucas Rossi).
+// They haven't fulfilled any service requests, so the second CALL subquery
+// returns nothing for them, and when a CALL subquery returns no rows it drops
+// the outer row as well. We checked this wasn't a bug - it's the partial
+// specialisation from our Assessment 2 EER model showing up in the data,
+// because not every staff member belongs to a guest-facing subtype.
+
+
+// ============ USE CASE 4 - advanced ============
+//
+// Scenario:
+//   Marketing want a personalised upsell for guest #51 (Isla Dubois). Find the
+//   guests whose service history overlaps with hers, then recommend the
+//   services those guests bought that she hasn't tried yet, ranked by how many
+//   of them bought it and what it would be worth.
+//
+// Why it's the advanced one:
+//   This is the query that actually justifies moving to a graph database. It's
+//   a 4-hop traversal - Guest to Service, back out to other Guests, then to
+//   their other Services - and it's all one pattern. In SQL you'd need three
+//   self-joins through the junction table plus a couple of subqueries. This is
+//   the kind of question you pick a graph database for in the first place.
+
+MATCH (target:Guest {guestId: 51})-[:USED_SERVICE]->(shared:Service)
+      <-[:USED_SERVICE]-(peer:Guest)
+WHERE peer <> target
+WITH target, peer, count(shared) AS sharedServices
+WHERE sharedServices >= 3                       // only guests similar enough to be useful
+MATCH (peer)-[u:USED_SERVICE]->(rec:Service)
+WHERE NOT (target)-[:USED_SERVICE]->(rec)       // and only things she hasn't bought
+RETURN rec.serviceName                     AS RecommendedService,
+       rec.basePrice                       AS Price,
+       count(DISTINCT peer)                AS SimilarGuestsWhoBought,
+       sum(u.units)                        AS UnitsBoughtByPeers,
+       round(rec.basePrice *
+             count(DISTINCT peer), 2)      AS PotentialValue
+ORDER BY SimilarGuestsWhoBought DESC, PotentialValue DESC
+LIMIT 5;
+
+// Result - guest #51 has used 4 services, and 18 other guests share at least
+// 3 of them. Top recommendations:
+//   Breakfast Buffet  | 32.0 | 14 peers
+//   Late Checkout     | 55.0 | 13 peers
+//   Spa Treatment     | 90.0 | 13 peers
+//   Room Service      | 25.0 | 12 peers
+//   Business Centre   | 45.0 | 11 peers
+
+// Variation - same thing but for every guest at once, which is how you'd
+// actually run it as an overnight job:
+//
+//   MATCH (target:Guest)-[:USED_SERVICE]->(shared:Service)<-[:USED_SERVICE]-(peer:Guest)
+//   WHERE peer <> target
+//   WITH target, peer, count(shared) AS sharedServices
+//   WHERE sharedServices >= 3
+//   MATCH (peer)-[:USED_SERVICE]->(rec:Service)
+//   WHERE NOT (target)-[:USED_SERVICE]->(rec)
+//   WITH target, rec, count(DISTINCT peer) AS peers
+//   ORDER BY target.guestId, peers DESC
+//   RETURN target.guestId AS Guest,
+//          collect(rec.serviceName)[0..3] AS TopThreeRecommendations;

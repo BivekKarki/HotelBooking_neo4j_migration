@@ -1,0 +1,16 @@
+staffId,name,role,contactNumber,subtype,shiftHours,languagesSpoken,licenseNumber
+1,Chloe Dubois,Front Desk,0422696626,FrontDeskStaff,07:00-15:00,,
+2,Henry Williams,Front Desk,0494440285,FrontDeskStaff,15:00-23:00,,
+3,Ava Brown,Front Desk,0443695103,FrontDeskStaff,23:00-07:00,,
+4,Oscar Patel,Front Desk,0417183735,FrontDeskStaff,15:00-23:00,,
+5,Aisha Nguyen,Front Desk,0424075550,FrontDeskStaff,07:00-15:00,,
+6,Mia Rossi,Front Desk,0481389735,FrontDeskStaff,23:00-07:00,,
+7,Omar Silva,Concierge,0444144765,Concierge,,"English, Arabic",
+8,Henry Dubois,Concierge,0431245159,Concierge,,"English, Japanese",
+9,Liam Singh,Concierge,0476924974,Concierge,,"English, Japanese",
+10,Isla Tanaka,Concierge,0434227378,Concierge,,English,
+11,Noah Chen,Valet,0454056938,Valet,,,VLT-20194
+12,Mateo Chen,Valet,0414215945,Valet,,,VLT-47388
+13,Sofia Smith,Valet,0426235167,Valet,,,VLT-25752
+14,Oscar Muller,Duty Manager,0445586705,,,,
+15,Lucas Rossi,Duty Manager,0450606120,,,,

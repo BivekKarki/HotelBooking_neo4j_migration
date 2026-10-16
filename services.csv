@@ -1,0 +1,13 @@
+serviceId,serviceName,basePrice
+1,Room Service,25.0
+2,Spa Treatment,90.0
+3,Parking (per night),15.0
+4,Airport Shuttle,40.0
+5,Laundry,20.0
+6,Late Checkout,55.0
+7,Breakfast Buffet,32.0
+8,Minibar,18.0
+9,Gym / Pool Pass,22.0
+10,Business Centre,45.0
+11,Pet Care,38.0
+12,Guided City Tour,75.0

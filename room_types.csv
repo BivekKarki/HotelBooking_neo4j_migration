@@ -1,0 +1,6 @@
+roomTypeId,typeName,baseRate,maxCapacity
+1,Single,120.0,1
+2,Double,180.0,2
+3,Twin,190.0,2
+4,Suite,350.0,4
+5,Penthouse,620.0,6

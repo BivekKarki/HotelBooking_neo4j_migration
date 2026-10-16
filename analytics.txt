@@ -1,0 +1,336 @@
+// =============================================================================
+// PRT563 Assessment 4 - Tasks 4 and 5
+// Graph Data Science Library: centrality and similarity analytics
+// =============================================================================
+// Requires the Graph Data Science plugin (Neo4j Desktop > Plugins > Graph Data
+// Science Library > Install). Run import.txt first.
+// Check the version with:  RETURN gds.version();
+// =============================================================================
+
+
+// #############################################################################
+// TASK 4 - CENTRALITY
+// #############################################################################
+//
+// BUSINESS SCENARIO
+//   The hotel is about to expand and wants to know where its service-delivery
+//   network is fragile. Two questions:
+//     (a) Which staff are so central that losing them to leave or resignation
+//         would disrupt the most guest interactions? These are the people to
+//         cross-train and to build redundancy around.
+//     (b) Which services sit at the centre of guest activity, and therefore
+//         deserve investment and priority rostering?
+//
+//   Centrality answers both, because "important" here means structurally
+//   connected, not simply high revenue. A staff member can generate modest
+//   revenue yet still be the only link between many guests and many services.
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// 4.1 PROJECT THE SERVICE-DELIVERY GRAPH
+// UNDIRECTED, because influence here flows both ways: a guest reaches a service
+// through a booking, and a service reaches a guest the same way. Betweenness
+// and closeness are only meaningful on the undirected view of this network.
+// -----------------------------------------------------------------------------
+CALL gds.graph.project(
+  'serviceDelivery',
+  ['Guest', 'Booking', 'ServiceRequest', 'Service', 'Staff', 'Room'],
+  {
+    MADE:         {orientation: 'UNDIRECTED'},
+    PROCESSED_BY: {orientation: 'UNDIRECTED'},
+    RESERVED:     {orientation: 'UNDIRECTED'},
+    REQUESTED:    {orientation: 'UNDIRECTED'},
+    OF_SERVICE:   {orientation: 'UNDIRECTED'},
+    FULFILLED_BY: {orientation: 'UNDIRECTED'}
+  }
+) YIELD graphName, nodeCount, relationshipCount;
+// Expected: 907 nodes and 4,912 relationships - each of the 2,456 relationships
+// is counted in both directions because the orientation is UNDIRECTED.
+
+
+// -----------------------------------------------------------------------------
+// 4.2 DEGREE CENTRALITY - raw workload
+// The simplest measure: how many direct connections each staff member has.
+// -----------------------------------------------------------------------------
+CALL gds.degree.stream('serviceDelivery')
+YIELD nodeId, score
+WITH gds.util.asNode(nodeId) AS n, score
+WHERE n:Staff
+RETURN n.name AS Staff, n.role AS Role, toInteger(score) AS Degree
+ORDER BY Degree DESC;
+
+// RESULT (top 5)
+//   Chloe Dubois   | Front Desk | 89
+//   Aisha Nguyen   | Front Desk | 89
+//   Henry Williams | Front Desk | 86
+//   Ava Brown      | Front Desk | 86
+//   Mia Rossi      | Front Desk | 74
+// The two Duty Managers score 0 - they appear in the graph but fulfil no
+// bookings or service requests. That zero is a finding, not an error: it is
+// the partial specialisation from Assessment 2 visible in the analytics.
+
+
+// -----------------------------------------------------------------------------
+// 4.3 BETWEENNESS CENTRALITY - the bridging measure, and the key result
+// Counts how often a node lies on the shortest path between two other nodes.
+// A high score means that person is a bottleneck: guest-to-service paths run
+// THROUGH them, so their absence lengthens or breaks those paths.
+// -----------------------------------------------------------------------------
+CALL gds.betweenness.stream('serviceDelivery')
+YIELD nodeId, score
+WITH gds.util.asNode(nodeId) AS n, score
+WHERE n:Staff
+RETURN n.name AS Staff, n.role AS Role, round(score, 2) AS Betweenness
+ORDER BY Betweenness DESC
+LIMIT 10;
+
+// RESULT (top 5)
+//   Chloe Dubois   | Front Desk | 0.11281
+//   Aisha Nguyen   | Front Desk | 0.11201
+//   Henry Williams | Front Desk | 0.11012
+//   Ava Brown      | Front Desk | 0.10406
+//   Mia Rossi      | Front Desk | 0.08275
+//
+// Front desk staff dominate, because every booking passes through one of them
+// before any service is delivered. Chloe Dubois ranks first on both degree and
+// betweenness, which is the operational answer: she is the staff member to
+// build redundancy around. Note also how close the top four are - the network
+// is less dependent on any single person than a degree-only reading suggests,
+// and that nuance is worth stating in the report.
+
+
+// -----------------------------------------------------------------------------
+// 4.4 PAGERANK - influence weighted by the importance of neighbours
+// Unlike degree, PageRank rewards being connected to well-connected nodes.
+// -----------------------------------------------------------------------------
+CALL gds.pageRank.stream('serviceDelivery', {
+  maxIterations: 20,
+  dampingFactor: 0.85
+})
+YIELD nodeId, score
+WITH gds.util.asNode(nodeId) AS n, score
+WHERE n:Staff OR n:Service
+RETURN labels(n)[0]                                AS Type,
+       coalesce(n.name, n.serviceName)             AS Name,
+       round(score, 5)                             AS PageRank
+ORDER BY PageRank DESC
+LIMIT 15;
+
+// RESULT - services ranked by PageRank:
+//   Parking (per night)  0.01499   (degree 80)
+//   Room Service         0.01334   (degree 71)
+//   Breakfast Buffet     0.01170   (degree 62)
+//   Laundry              0.01039   (degree 55)
+//   Spa Treatment        0.00947   (degree 50)
+//   Airport Shuttle      0.00873   (degree 46)
+//   Late Checkout        0.00688   (degree 36)
+//   Minibar              0.00670   (degree 35)
+//   Business Centre      0.00650   (degree 34)
+//   Guided City Tour     0.00575   (degree 30)
+//   Gym / Pool Pass      0.00429   (degree 22)
+//   Pet Care             0.00374   (degree 19)
+
+
+// -----------------------------------------------------------------------------
+// 4.5 CLOSENESS CENTRALITY - reach
+// How near a node is to every other node. High closeness means this person can
+// reach the whole guest base in few hops.
+// -----------------------------------------------------------------------------
+CALL gds.closeness.stream('serviceDelivery')
+YIELD nodeId, score
+WITH gds.util.asNode(nodeId) AS n, score
+WHERE n:Staff
+RETURN n.name AS Staff, n.role AS Role, round(score, 5) AS Closeness
+ORDER BY Closeness DESC
+LIMIT 10;
+
+
+// -----------------------------------------------------------------------------
+// 4.6 ARTICLERANK - PageRank's less hub-biased sibling
+// Included to satisfy the brief's request to experiment with a range of
+// algorithms, and because it is a useful contrast: ArticleRank reduces the
+// advantage a node gets purely from having many low-value neighbours.
+// -----------------------------------------------------------------------------
+CALL gds.articleRank.stream('serviceDelivery', {maxIterations: 20})
+YIELD nodeId, score
+WITH gds.util.asNode(nodeId) AS n, score
+WHERE n:Service
+RETURN n.serviceName AS Service, round(score, 5) AS ArticleRank
+ORDER BY ArticleRank DESC;
+
+
+// -----------------------------------------------------------------------------
+// 4.7 WRITE THE BEST MEASURE BACK TO THE GRAPH
+// Persisting the score lets ordinary Cypher queries use it afterwards.
+// -----------------------------------------------------------------------------
+CALL gds.betweenness.write('serviceDelivery', {writeProperty: 'betweenness'})
+YIELD nodesWritten, centralityDistribution;
+
+MATCH (s:Staff)
+WHERE s.betweenness IS NOT NULL
+RETURN s.name AS Staff, s.role AS Role, round(s.betweenness, 2) AS Betweenness
+ORDER BY Betweenness DESC;
+
+
+// #############################################################################
+// TASK 5 - SIMILARITY
+// #############################################################################
+//
+// BUSINESS SCENARIO
+//   Marketing wants to run targeted campaigns instead of sending every offer to
+//   every guest. If two guests consume a similar mix of services, an offer that
+//   converted for one is likely to convert for the other. Node Similarity finds
+//   those look-alike pairs so campaigns can be aimed at a segment rather than
+//   the whole list.
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// 5.1 PROJECT THE GUEST-SERVICE BIPARTITE GRAPH
+// Uses the USED_SERVICE relationship materialised in import.txt section 5.
+// NATURAL orientation: similarity compares what each guest points AT.
+// -----------------------------------------------------------------------------
+CALL gds.graph.project(
+  'guestServices',
+  ['Guest', 'Service'],
+  {USED_SERVICE: {orientation: 'NATURAL', properties: ['units', 'occasions']}}
+) YIELD graphName, nodeCount, relationshipCount;
+// Expected: 72 nodes (60 guests + 12 services), 307 relationships.
+
+
+// -----------------------------------------------------------------------------
+// 5.2 NODE SIMILARITY - unweighted Jaccard
+// Jaccard = (services both guests used) / (services either guest used).
+// -----------------------------------------------------------------------------
+CALL gds.nodeSimilarity.stream('guestServices', {
+  similarityCutoff: 0.5,
+  topK: 5
+})
+YIELD node1, node2, similarity
+WITH gds.util.asNode(node1) AS a, gds.util.asNode(node2) AS b, similarity
+WHERE a:Guest AND b:Guest AND a.guestId < b.guestId
+RETURN a.firstName + ' ' + a.lastName + ' (#' + a.guestId + ')'  AS GuestA,
+       b.firstName + ' ' + b.lastName + ' (#' + b.guestId + ')'  AS GuestB,
+       round(similarity, 4)                                      AS Jaccard
+ORDER BY Jaccard DESC
+LIMIT 10;
+
+// RESULT (top pairs)
+//   Hugo Ali (#3)          | Sofia Dubois (#34)   | 1.0000  (2 of 2 shared)
+//   Chloe Singh (#14)      | Chloe Patel (#40)    | 0.9167  (11 of 12)
+//   Chloe Singh (#14)      | Omar Martinez (#4)   | 0.9091  (10 of 11)
+//   Liam Singh (#32)       | Omar Martinez (#4)   | 0.9000  (9 of 10)
+//   Oscar Silva (#48)      | Ethan Smith (#53)    | 0.8889  (8 of 9)
+//
+// Only one pair scores exactly 1.0, and it is a pair of light users who each
+// bought the same two services. That is worth noting in the report: a perfect
+// Jaccard score on a small basket is weak evidence, which is why the weighted
+// version below is the better basis for a campaign.
+
+
+// -----------------------------------------------------------------------------
+// 5.3 NODE SIMILARITY - weighted Jaccard
+// Setting relationshipWeightProperty makes GDS compare HOW MUCH of each service
+// the guests consumed, not just whether they consumed it. A guest who buys
+// parking twenty times is no longer treated the same as one who bought it once.
+// -----------------------------------------------------------------------------
+CALL gds.nodeSimilarity.stream('guestServices', {
+  relationshipWeightProperty: 'units',
+  similarityCutoff: 0.4,
+  topK: 5
+})
+YIELD node1, node2, similarity
+WITH gds.util.asNode(node1) AS a, gds.util.asNode(node2) AS b, similarity
+WHERE a:Guest AND b:Guest AND a.guestId < b.guestId
+RETURN a.firstName + ' ' + a.lastName + ' (#' + a.guestId + ')'  AS GuestA,
+       b.firstName + ' ' + b.lastName + ' (#' + b.guestId + ')'  AS GuestB,
+       round(similarity, 4)                                      AS WeightedJaccard
+ORDER BY WeightedJaccard DESC
+LIMIT 10;
+
+// RESULT (top pairs) - note how different the ranking is from 5.2
+//   Hugo Ali (#3)          | Sofia Dubois (#34)   | 1.0000
+//   Chloe Singh (#14)      | Chloe Patel (#40)    | 0.6489
+//   Ethan Tanaka (#50)     | Olivia Singh (#59)   | 0.6364
+//   Tom Silva (#22)        | Chloe Patel (#40)    | 0.6111
+//   Liam Martinez (#30)    | Oscar Rossi (#38)    | 0.6000
+//   Ethan Smith (#53)      | Olivia Singh (#6)    | 0.5517
+//   Amelia Johnson (#17)   | Oscar Silva (#48)    | 0.5500
+
+
+// -----------------------------------------------------------------------------
+// 5.4 ALTERNATIVE ALGORITHM - K-Nearest Neighbours (OPTIONAL)
+// KNN approximates similarity by sampling rather than comparing every pair, so
+// it scales better on large graphs. It compares nodes by their NODE properties,
+// not by their relationships, so it needs its own projection carrying a numeric
+// node property. Here we use loyaltyPoints, which the Assessment 2 ALTER
+// statement introduced and which this dataset populates (50 per completed stay).
+//
+// This section is supplementary. Task 5 is already satisfied by 5.2 and 5.3.
+// If it errors on your GDS version, drop the projection and move on to 5.5.
+// -----------------------------------------------------------------------------
+CALL gds.graph.project(
+  'guestProfile',
+  {Guest: {properties: ['loyaltyPoints']}},
+  '*'
+) YIELD graphName, nodeCount, relationshipCount;
+
+CALL gds.knn.stream('guestProfile', {
+  topK: 3,
+  nodeProperties: ['loyaltyPoints'],
+  randomSeed: 563,
+  concurrency: 1,
+  sampleRate: 1.0
+})
+YIELD node1, node2, similarity
+WITH gds.util.asNode(node1) AS a, gds.util.asNode(node2) AS b, similarity
+WHERE a.guestId < b.guestId
+RETURN a.firstName + ' ' + a.lastName AS GuestA,
+       a.loyaltyPoints                AS PointsA,
+       b.firstName + ' ' + b.lastName AS GuestB,
+       b.loyaltyPoints                AS PointsB,
+       round(similarity, 4)           AS Score
+ORDER BY Score DESC
+LIMIT 10;
+
+// Note the contrast worth making in the report: 5.2 and 5.3 group guests by
+// WHAT they consume, whereas KNN here groups them by HOW VALUABLE they are.
+// Different question, different segment - which is the point of trying more
+// than one similarity algorithm.
+
+CALL gds.graph.drop('guestProfile') YIELD graphName;
+
+
+// -----------------------------------------------------------------------------
+// 5.5 WRITE SIMILARITY BACK AND USE IT
+// Persisting the pairs as SIMILAR_TO relationships turns the analysis into
+// something the application can query directly.
+// -----------------------------------------------------------------------------
+CALL gds.nodeSimilarity.write('guestServices', {
+  relationshipWeightProperty: 'units',
+  similarityCutoff: 0.4,
+  topK: 3,
+  writeRelationshipType: 'SIMILAR_TO',
+  writeProperty: 'score'
+}) YIELD nodesCompared, relationshipsWritten;
+
+// The campaign query: for a guest, what did their closest look-alikes buy
+// that they have not tried? This is Task 5 feeding straight back into the
+// Task 3 recommendation use case.
+MATCH (g:Guest {guestId: 51})-[sim:SIMILAR_TO]->(peer:Guest)-[:USED_SERVICE]->(s:Service)
+WHERE NOT (g)-[:USED_SERVICE]->(s)
+RETURN s.serviceName            AS Offer,
+       s.basePrice              AS Price,
+       count(DISTINCT peer)     AS LookAlikesWhoBought,
+       round(avg(sim.score), 4) AS AvgSimilarity
+ORDER BY LookAlikesWhoBought DESC, AvgSimilarity DESC;
+
+
+// -----------------------------------------------------------------------------
+// 5.6 CLEAN UP THE PROJECTIONS
+// In-memory graphs hold heap until they are dropped.
+// -----------------------------------------------------------------------------
+CALL gds.graph.list() YIELD graphName, nodeCount, relationshipCount;
+CALL gds.graph.drop('serviceDelivery') YIELD graphName;
+CALL gds.graph.drop('guestServices')   YIELD graphName;

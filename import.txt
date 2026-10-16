@@ -1,0 +1,295 @@
+// PRT563 Assessment 4 - Task 2: Graph database implementation
+// Hotel Booking & Guest Services - moving our Assessment 2 database into Neo4j
+// Sydney Group 12
+//
+// How to run this:
+//   1. Put all the .csv files in the import folder of the database
+//      (Neo4j Desktop: the "..." menu > Open folder > Import)
+//   2. Run this file section by section, top to bottom.
+
+
+// ---- SECTION 0: clear the database (optional) ----
+MATCH (n) DETACH DELETE n;
+
+
+// ---- SECTION 1: constraints ----
+// These are the primary keys from the relational model. A uniqueness
+// constraint also builds an index behind it, so we get integrity and
+// faster lookups at the same time.
+
+CREATE CONSTRAINT guest_id IF NOT EXISTS
+  FOR (g:Guest) REQUIRE g.guestId IS UNIQUE;
+CREATE CONSTRAINT booking_id IF NOT EXISTS
+  FOR (b:Booking) REQUIRE b.bookingId IS UNIQUE;
+CREATE CONSTRAINT room_id IF NOT EXISTS
+  FOR (r:Room) REQUIRE r.roomId IS UNIQUE;
+CREATE CONSTRAINT roomtype_id IF NOT EXISTS
+  FOR (t:RoomType) REQUIRE t.roomTypeId IS UNIQUE;
+CREATE CONSTRAINT service_id IF NOT EXISTS
+  FOR (s:Service) REQUIRE s.serviceId IS UNIQUE;
+CREATE CONSTRAINT request_id IF NOT EXISTS
+  FOR (q:ServiceRequest) REQUIRE q.requestId IS UNIQUE;
+CREATE CONSTRAINT staff_id IF NOT EXISTS
+  FOR (s:Staff) REQUIRE s.staffId IS UNIQUE;
+CREATE CONSTRAINT channel_id IF NOT EXISTS
+  FOR (c:BookingChannel) REQUIRE c.channelId IS UNIQUE;
+CREATE CONSTRAINT invoice_id IF NOT EXISTS
+  FOR (i:Invoice) REQUIRE i.invoiceId IS UNIQUE;
+CREATE CONSTRAINT payment_id IF NOT EXISTS
+  FOR (p:Payment) REQUIRE p.paymentId IS UNIQUE;
+CREATE CONSTRAINT method_id IF NOT EXISTS
+  FOR (m:PaymentMethod) REQUIRE m.paymentMethodId IS UNIQUE;
+
+// In Assessment 2 the Invoice table had a UNIQUE foreign key on BookingID so
+// one booking could only ever have one invoice. This keeps that rule.
+CREATE CONSTRAINT invoice_one_per_booking IF NOT EXISTS
+  FOR (i:Invoice) REQUIRE i.bookingId IS UNIQUE;
+
+
+// ---- SECTION 2: indexes ----
+// These are the properties our Task 3 queries filter or sort on. Without
+// them Neo4j has to scan every node with that label.
+
+CREATE INDEX booking_status IF NOT EXISTS
+  FOR (b:Booking) ON (b.status);
+CREATE INDEX booking_checkin IF NOT EXISTS
+  FOR (b:Booking) ON (b.checkInDate);
+CREATE INDEX room_status IF NOT EXISTS
+  FOR (r:Room) ON (r.status);
+CREATE INDEX invoice_status IF NOT EXISTS
+  FOR (i:Invoice) ON (i.status);
+CREATE INDEX guest_lastname IF NOT EXISTS
+  FOR (g:Guest) ON (g.lastName);
+CREATE INDEX service_name IF NOT EXISTS
+  FOR (s:Service) ON (s.serviceName);
+CREATE INDEX roomtype_rate IF NOT EXISTS
+  FOR (t:RoomType) ON (t.baseRate);
+
+// Composite index - we look up available rooms on a given floor a lot.
+CREATE INDEX room_status_floor IF NOT EXISTS
+  FOR (r:Room) ON (r.status, r.floor);
+
+// Full-text index for searching guests by name or email.
+CREATE FULLTEXT INDEX guest_search IF NOT EXISTS
+  FOR (g:Guest) ON EACH [g.firstName, g.lastName, g.email];
+
+CALL db.awaitIndexes();
+
+
+// ---- SECTION 3: load the nodes ----
+// LOAD CSV reads everything as text, so we have to convert with toInteger(),
+// toFloat() and date() or the numbers come in as strings.
+
+// 3.1 reference tables
+LOAD CSV WITH HEADERS FROM 'file:///room_types.csv' AS row
+MERGE (t:RoomType {roomTypeId: toInteger(row.roomTypeId)})
+SET   t.typeName    = row.typeName,
+      t.baseRate    = toFloat(row.baseRate),
+      t.maxCapacity = toInteger(row.maxCapacity);
+
+LOAD CSV WITH HEADERS FROM 'file:///services.csv' AS row
+MERGE (s:Service {serviceId: toInteger(row.serviceId)})
+SET   s.serviceName = row.serviceName,
+      s.basePrice   = toFloat(row.basePrice);
+
+LOAD CSV WITH HEADERS FROM 'file:///channels.csv' AS row
+MERGE (c:BookingChannel {channelId: toInteger(row.channelId)})
+SET   c.channelName = row.channelName;
+
+LOAD CSV WITH HEADERS FROM 'file:///payment_methods.csv' AS row
+MERGE (m:PaymentMethod {paymentMethodId: toInteger(row.paymentMethodId)})
+SET   m.methodName = row.methodName;
+
+// 3.2 guests
+LOAD CSV WITH HEADERS FROM 'file:///guests.csv' AS row
+MERGE (g:Guest {guestId: toInteger(row.guestId)})
+SET   g.firstName     = row.firstName,
+      g.lastName      = row.lastName,
+      g.email         = row.email,
+      g.phone         = row.phone,
+      g.idType        = row.idType,
+      g.idNumber      = row.idNumber,
+      g.loyaltyPoints = toInteger(row.loyaltyPoints);
+
+// 3.3 staff
+// Neo4j doesn't have inheritance, so we did the ISA hierarchy from our EER
+// model using extra labels. Everyone is :Staff and then optionally also
+// :FrontDesk, :Concierge or :Valet. This still keeps both rules from
+// Assessment 2 - disjoint (only one subtype each) and partial (the Duty
+// Managers don't get a subtype label at all).
+LOAD CSV WITH HEADERS FROM 'file:///staff.csv' AS row
+MERGE (s:Staff {staffId: toInteger(row.staffId)})
+SET   s.name          = row.name,
+      s.role          = row.role,
+      s.contactNumber = row.contactNumber;
+
+LOAD CSV WITH HEADERS FROM 'file:///staff.csv' AS row
+WITH row WHERE row.subtype = 'FrontDeskStaff'
+MATCH (s:Staff {staffId: toInteger(row.staffId)})
+SET   s:FrontDesk, s.shiftHours = row.shiftHours;
+
+LOAD CSV WITH HEADERS FROM 'file:///staff.csv' AS row
+WITH row WHERE row.subtype = 'Concierge'
+MATCH (s:Staff {staffId: toInteger(row.staffId)})
+SET   s:Concierge, s.languagesSpoken = row.languagesSpoken;
+
+LOAD CSV WITH HEADERS FROM 'file:///staff.csv' AS row
+WITH row WHERE row.subtype = 'Valet'
+MATCH (s:Staff {staffId: toInteger(row.staffId)})
+SET   s:Valet, s.licenseNumber = row.licenseNumber;
+
+// 3.4 rooms
+LOAD CSV WITH HEADERS FROM 'file:///rooms.csv' AS row
+MERGE (r:Room {roomId: toInteger(row.roomId)})
+SET   r.roomNumber = row.roomNumber,
+      r.floor      = toInteger(row.floor),
+      r.status     = row.status;
+
+// 3.5 bookings
+LOAD CSV WITH HEADERS FROM 'file:///bookings.csv' AS row
+MERGE (b:Booking {bookingId: toInteger(row.bookingId)})
+SET   b.bookingDate  = date(row.bookingDate),
+      b.checkInDate  = date(row.checkInDate),
+      b.checkOutDate = date(row.checkOutDate),
+      b.status       = row.status,
+      b.nights       = toInteger(row.nights);
+
+// 3.6 service requests
+// This one is a node and not a relationship. The BookingService associative
+// entity from Assessment 2 connects three things - a booking, a service and
+// the staff member who delivered it - and a Cypher relationship can only join
+// two nodes. So the ternary relationship has to become a node.
+LOAD CSV WITH HEADERS FROM 'file:///service_requests.csv' AS row
+MERGE (q:ServiceRequest {requestId: toInteger(row.requestId)})
+SET   q.quantity       = toInteger(row.quantity),
+      q.serviceDate    = date(row.serviceDate),
+      q.priceAtBooking = toFloat(row.priceAtBooking),
+      q.lineTotal      = toFloat(row.lineTotal);
+
+// 3.7 invoices and payments
+LOAD CSV WITH HEADERS FROM 'file:///invoices.csv' AS row
+MERGE (i:Invoice {invoiceId: toInteger(row.invoiceId)})
+SET   i.bookingId   = toInteger(row.bookingId),
+      i.issueDate   = date(row.issueDate),
+      i.totalAmount = toFloat(row.totalAmount),
+      i.status      = row.status;
+
+LOAD CSV WITH HEADERS FROM 'file:///payments.csv' AS row
+MERGE (p:Payment {paymentId: toInteger(row.paymentId)})
+SET   p.amountPaid  = toFloat(row.amountPaid),
+      p.paymentDate = date(row.paymentDate);
+
+
+// ---- SECTION 4: load the relationships ----
+// Each foreign key from the relational schema turns into a relationship.
+// Note we use MATCH here and not MERGE for the two end nodes. They already
+// exist from Section 3, and MATCH will just find nothing if something is
+// wrong instead of creating an empty duplicate node.
+
+// Room -> RoomType  (Room.RoomTypeID)
+LOAD CSV WITH HEADERS FROM 'file:///rooms.csv' AS row
+MATCH (r:Room     {roomId:     toInteger(row.roomId)})
+MATCH (t:RoomType {roomTypeId: toInteger(row.roomTypeId)})
+MERGE (r)-[:OF_TYPE]->(t);
+
+// Guest -> Booking  (Booking.GuestID)
+LOAD CSV WITH HEADERS FROM 'file:///bookings.csv' AS row
+MATCH (g:Guest   {guestId:   toInteger(row.guestId)})
+MATCH (b:Booking {bookingId: toInteger(row.bookingId)})
+MERGE (g)-[:MADE]->(b);
+
+// Booking -> BookingChannel  (Booking.ChannelID)
+LOAD CSV WITH HEADERS FROM 'file:///bookings.csv' AS row
+MATCH (b:Booking        {bookingId: toInteger(row.bookingId)})
+MATCH (c:BookingChannel {channelId: toInteger(row.channelId)})
+MERGE (b)-[:VIA]->(c);
+
+// Booking -> Staff  (Booking.StaffID)
+LOAD CSV WITH HEADERS FROM 'file:///bookings.csv' AS row
+MATCH (b:Booking {bookingId: toInteger(row.bookingId)})
+MATCH (s:Staff   {staffId:   toInteger(row.staffId)})
+MERGE (b)-[:PROCESSED_BY]->(s);
+
+// Booking -> Room, keeping the junction table's own columns.
+// BookingRoom disappears completely here. It only joined two entities, so its
+// attributes just become properties on the relationship.
+LOAD CSV WITH HEADERS FROM 'file:///booking_rooms.csv' AS row
+MATCH (b:Booking {bookingId: toInteger(row.bookingId)})
+MATCH (r:Room    {roomId:    toInteger(row.roomId)})
+MERGE (b)-[res:RESERVED]->(r)
+SET   res.ratePerNight = toFloat(row.ratePerNight),
+      res.nights       = toInteger(row.nights),
+      res.lineTotal    = toFloat(row.lineTotal);
+
+// Booking -> ServiceRequest -> Service, and ServiceRequest -> Staff
+LOAD CSV WITH HEADERS FROM 'file:///service_requests.csv' AS row
+MATCH (b:Booking        {bookingId: toInteger(row.bookingId)})
+MATCH (q:ServiceRequest {requestId: toInteger(row.requestId)})
+MERGE (b)-[:REQUESTED]->(q);
+
+LOAD CSV WITH HEADERS FROM 'file:///service_requests.csv' AS row
+MATCH (q:ServiceRequest {requestId: toInteger(row.requestId)})
+MATCH (s:Service        {serviceId: toInteger(row.serviceId)})
+MERGE (q)-[:OF_SERVICE]->(s);
+
+LOAD CSV WITH HEADERS FROM 'file:///service_requests.csv' AS row
+MATCH (q:ServiceRequest {requestId: toInteger(row.requestId)})
+MATCH (s:Staff          {staffId:   toInteger(row.staffId)})
+MERGE (q)-[:FULFILLED_BY]->(s);
+
+// Booking -> Invoice  (1:1, Invoice.BookingID was UNIQUE)
+LOAD CSV WITH HEADERS FROM 'file:///invoices.csv' AS row
+MATCH (b:Booking {bookingId: toInteger(row.bookingId)})
+MATCH (i:Invoice {invoiceId: toInteger(row.invoiceId)})
+MERGE (b)-[:GENERATED]->(i);
+
+// Invoice -> Payment -> PaymentMethod
+LOAD CSV WITH HEADERS FROM 'file:///payments.csv' AS row
+MATCH (i:Invoice {invoiceId: toInteger(row.invoiceId)})
+MATCH (p:Payment {paymentId: toInteger(row.paymentId)})
+MERGE (i)-[:SETTLED_BY]->(p);
+
+LOAD CSV WITH HEADERS FROM 'file:///payments.csv' AS row
+MATCH (p:Payment       {paymentId:       toInteger(row.paymentId)})
+MATCH (m:PaymentMethod {paymentMethodId: toInteger(row.paymentMethodId)})
+MERGE (p)-[:PAID_VIA]->(m);
+
+
+// ---- SECTION 5: extra relationship we need for Task 5 ----
+// The similarity algorithm needs Guest and Service to be directly connected.
+// Going Guest -> Booking -> ServiceRequest -> Service every time the algorithm
+// runs would be slow, so we work it out once here and store it, with a weight
+// for how many units of that service the guest actually bought.
+MATCH (g:Guest)-[:MADE]->(:Booking)-[:REQUESTED]->(q:ServiceRequest)-[:OF_SERVICE]->(s:Service)
+WITH g, s, sum(q.quantity) AS units, count(q) AS occasions
+MERGE (g)-[u:USED_SERVICE]->(s)
+SET   u.units = units, u.occasions = occasions;
+
+
+// ---- SECTION 6: check the import worked ----
+// These are the numbers we got. If yours don't match, re-run whichever
+// section loaded the missing data.
+
+MATCH (n) RETURN labels(n) AS labels, count(*) AS nodes ORDER BY nodes DESC;
+// We got:  Booking 250, ServiceRequest 540, Payment 252, Invoice 226,
+//          Guest 60, Room 30, Staff 15 (6 are also :FrontDesk, 4 :Concierge,
+//          3 :Valet, and 2 have no subtype), Service 12, RoomType 5,
+//          BookingChannel 4, PaymentMethod 3
+//          = 1397 nodes
+
+MATCH ()-[r]->() RETURN type(r) AS relationship, count(*) AS count ORDER BY count DESC;
+// We got:  REQUESTED 540, OF_SERVICE 540, FULFILLED_BY 540, USED_SERVICE 307,
+//          RESERVED 336, MADE 250, VIA 250, PROCESSED_BY 250,
+//          SETTLED_BY 252, PAID_VIA 252, GENERATED 226, OF_TYPE 30
+//          = 3773 relationships
+
+// Quick check - no booking should have more than one invoice.
+MATCH (b:Booking)-[:GENERATED]->(i:Invoice)
+WITH b, count(i) AS invoices WHERE invoices > 1
+RETURN b.bookingId, invoices;
+// Should return 0 rows.
+
+// Quick check - a cancelled booking shouldn't have any service requests.
+MATCH (b:Booking {status: 'Cancelled'})-[:REQUESTED]->(q:ServiceRequest)
+RETURN count(q) AS cancelledWithServices;
+// Should return 0.
