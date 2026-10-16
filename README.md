@@ -1,11 +1,15 @@
 # PRT563 Assessment 4 - Hotel Booking & Guest Services in Neo4j
 
 Sydney Group 12
-Bivek Karki (s395860), Subodh Budhathoki (s394191),
-Pramisha Shrestha (s399137), Soman Ranabhat (s388032)
+Bivek Karki (s395860)
 
-This is the repository that goes with our Assessment 4 report. It has the
-scripts and data for migrating our Assessment 2 hotel database from a
+Subodh Budhathoki (s394191)
+
+Pramisha Shrestha (s399137)
+
+Soman Ranabhat (s388032)
+
+This has the scripts and data for migrating our Assessment 2 hotel database from a
 relational model into Neo4j.
 
 ## What's in here
